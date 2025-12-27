@@ -1,0 +1,61 @@
+name: CI-CD Pipeline (EKS + ECR)
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPO: 099210689252.dkr.ecr.ap-south-1.amazonaws.com/flask-nginx-app
+  EKS_CLUSTER: flask-eks-cluster
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      run: |
+        aws ecr get-login-password --region $AWS_REGION \
+        | docker login --username AWS --password-stdin $ECR_REPO
+
+    - name: Detect environment
+      run: |
+        if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+          echo "ENV=prod" >> $GITHUB_ENV
+          echo "TAG=prod" >> $GITHUB_ENV
+        else
+          echo "ENV=dev" >> $GITHUB_ENV
+          echo "TAG=dev" >> $GITHUB_ENV
+        fi
+
+    - name: Build Docker images
+      run: |
+        docker build -t $ECR_REPO:flask-$TAG -f Dockerfile .
+        docker build -t $ECR_REPO:nginx-$TAG -f nginx.Dockerfile .
+
+    - name: Push images to ECR
+      run: |
+        docker push $ECR_REPO:flask-$TAG
+        docker push $ECR_REPO:nginx-$TAG
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER
+
+    - name: Deploy to EKS
+      run: |
+        kubectl apply -f k8s/ -n $ENV
+
