@@ -28,6 +28,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Verify AWS credentials
+        run: |
+          aws sts get-caller-identity
+          aws eks describe-cluster --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -68,12 +73,26 @@ jobs:
 
       - name: Update kubeconfig
         run: |
+          mkdir -p $HOME/.kube
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
-            --name ${{ env.EKS_CLUSTER }}
+            --name ${{ env.EKS_CLUSTER }} \
+            --kubeconfig $HOME/.kube/config
+          
+          echo "Kubeconfig location:"
+          ls -la $HOME/.kube/config
+          
+          echo "Kubeconfig contents (first 20 lines):"
+          head -20 $HOME/.kube/config
 
       - name: Verify cluster access
         run: |
+          echo "Current KUBECONFIG: $KUBECONFIG"
+          echo "HOME directory: $HOME"
+          echo "kubectl version:"
+          kubectl version --client
+          
+          echo "Testing cluster access..."
           kubectl get nodes
 
       - name: Create namespace and setup RBAC
@@ -84,17 +103,26 @@ jobs:
           # Apply ConfigMap and RBAC first
           kubectl apply -f task4-terraform-eks/k8s/01-configmap.yaml
           kubectl apply -f task4-terraform-eks/k8s/04-rbac.yaml
+          
+          echo "Namespace created and RBAC configured"
+          kubectl get namespace ${{ env.K8S_NAMESPACE }}
 
       - name: Create ECR credentials secret
         run: |
+          # Get the login password
+          ECR_PASSWORD=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+          
           # Create Docker registry secret for ECR access
           kubectl create secret docker-registry ecr-secret \
             --docker-server=${{ env.ECR_REGISTRY }} \
             --docker-username=AWS \
-            --docker-password=$(aws ecr get-login-password --region ${{ env.AWS_REGION }}) \
+            --docker-password="${ECR_PASSWORD}" \
             -n ${{ env.K8S_NAMESPACE }} \
             --dry-run=client \
             -o yaml | kubectl apply -f -
+          
+          echo "ECR credentials secret created/updated"
+          kubectl get secret ecr-secret -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.data}'
 
       - name: Update Kubernetes manifests with new image tags
         run: |
