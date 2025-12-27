@@ -13,6 +13,9 @@ spec:
       labels:
         app: nginx-proxy
     spec:
+      serviceAccountName: nginx-proxy-sa
+      imagePullSecrets:
+      - name: ecr-secret
       containers:
         - name: nginx
           image: 099210689252.dkr.ecr.ap-south-1.amazonaws.com/flask-nginx-app:nginx-dev
@@ -51,5 +54,5 @@ spec:
   ports:
     - port: 80
       targetPort: 80
-      nodePort: 30080
+      protocol: TCP
 

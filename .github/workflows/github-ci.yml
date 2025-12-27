@@ -8,8 +8,10 @@ on:
 
 env:
   AWS_REGION: ap-south-1
-  ECR_REPO: 099210689252.dkr.ecr.ap-south-1.amazonaws.com/flask-nginx-app
+  ECR_ACCOUNT_ID: 099210689252
+  ECR_REPO_NAME: flask-nginx-app
   EKS_CLUSTER: flask-eks-cluster
+  K8S_NAMESPACE: flask-app
 
 jobs:
   build-and-deploy:
@@ -24,49 +26,104 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1 
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        run: |
-          aws ecr get-login-password --region $AWS_REGION \
-          | docker login --username AWS --password-stdin $ECR_REPO
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Detect environment
+      - name: Detect environment and set variables
         run: |
           if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            echo "ENV=prod" >> $GITHUB_ENV
-            echo "TAG=prod" >> $GITHUB_ENV
+            echo "ENVIRONMENT=prod" >> $GITHUB_ENV
+            echo "IMAGE_TAG=prod" >> $GITHUB_ENV
           else
-            echo "ENV=dev" >> $GITHUB_ENV
-            echo "TAG=dev" >> $GITHUB_ENV
+            echo "ENVIRONMENT=dev" >> $GITHUB_ENV
+            echo "IMAGE_TAG=dev" >> $GITHUB_ENV
           fi
+          
+          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
+          echo "ECR_REGISTRY=${ECR_REGISTRY}" >> $GITHUB_ENV
+          echo "FLASK_IMAGE=${ECR_REGISTRY}/${{ env.ECR_REPO_NAME }}:flask-${IMAGE_TAG}" >> $GITHUB_ENV
+          echo "NGINX_IMAGE=${ECR_REGISTRY}/${{ env.ECR_REPO_NAME }}:nginx-${IMAGE_TAG}" >> $GITHUB_ENV
 
-      - name: Build Docker images
+      - name: Build Flask Docker image
         run: |
           docker build \
-            -t $ECR_REPO:flask-$TAG \
+            -t ${{ env.FLASK_IMAGE }} \
             -f task2-docker-compose/Dockerfile \
             task2-docker-compose
 
+      - name: Build Nginx Docker image
+        run: |
           docker build \
-            -t $ECR_REPO:nginx-$TAG \
+            -t ${{ env.NGINX_IMAGE }} \
             -f task2-docker-compose/nginx.Dockerfile \
             task2-docker-compose
 
       - name: Push images to ECR
         run: |
-          docker push $ECR_REPO:flask-$TAG
-          docker push $ECR_REPO:nginx-$TAG
+          docker push ${{ env.FLASK_IMAGE }}
+          docker push ${{ env.NGINX_IMAGE }}
 
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --region ap-south-1 --name $EKS_CLUSTER
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER }}
 
       - name: Verify cluster access
         run: |
           kubectl get nodes
 
-      - name: Deploy to EKS
+      - name: Create namespace and setup RBAC
         run: |
-          kubectl apply -f task3-kubernetes/ -n $ENV
+          # Create namespace if it doesn't exist
+          kubectl get namespace ${{ env.K8S_NAMESPACE }} || kubectl create namespace ${{ env.K8S_NAMESPACE }}
+          
+          # Apply ConfigMap and RBAC first
+          kubectl apply -f task4-terraform-eks/k8s/01-configmap.yaml
+          kubectl apply -f task4-terraform-eks/k8s/04-rbac.yaml
+
+      - name: Create ECR credentials secret
+        run: |
+          # Create Docker registry secret for ECR access
+          kubectl create secret docker-registry ecr-secret \
+            --docker-server=${{ env.ECR_REGISTRY }} \
+            --docker-username=AWS \
+            --docker-password=$(aws ecr get-login-password --region ${{ env.AWS_REGION }}) \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --dry-run=client \
+            -o yaml | kubectl apply -f -
+
+      - name: Update Kubernetes manifests with new image tags
+        run: |
+          # Update Flask image
+          sed -i "s|image: .*flask-.*|image: ${{ env.FLASK_IMAGE }}|g" task4-terraform-eks/k8s/02-flask-app-deployment.yaml
+          
+          # Update Nginx image
+          sed -i "s|image: .*nginx-.*|image: ${{ env.NGINX_IMAGE }}|g" task4-terraform-eks/k8s/03-nginx-proxy-deployment.yaml
+
+      - name: Deploy Deployments to EKS
+        run: |
+          kubectl apply -f task4-terraform-eks/k8s/02-flask-app-deployment.yaml
+          kubectl apply -f task4-terraform-eks/k8s/03-nginx-proxy-deployment.yaml
+
+      - name: Apply Network Policies and HPA
+        run: |
+          kubectl apply -f task4-terraform-eks/k8s/05-network-policy.yaml
+          kubectl apply -f task4-terraform-eks/k8s/06-hpa-pdb.yaml
+
+      - name: Deploy Prometheus monitoring
+        run: |
+          kubectl apply -f task4-terraform-eks/k8s/07-prometheus.yaml
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/flask-app -n ${{ env.K8S_NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/nginx-proxy -n ${{ env.K8S_NAMESPACE }} --timeout=5m
+          
+          echo "Deployment successful!"
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }}
+          kubectl get svc -n ${{ env.K8S_NAMESPACE }}
 
