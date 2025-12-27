@@ -28,10 +28,22 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify AWS credentials
+      - name: Verify AWS credentials and EKS cluster
         run: |
+          echo "=== AWS Identity ==="
           aws sts get-caller-identity
-          aws eks describe-cluster --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+          
+          echo ""
+          echo "=== EKS Cluster Info ==="
+          aws eks describe-cluster \
+            --name ${{ env.EKS_CLUSTER }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'cluster.[name,status,endpoint]' \
+            --output table
+          
+          echo ""
+          echo "=== AWS CLI Credentials Check ==="
+          env | grep -i aws || echo "No AWS env vars visible (expected - they're in config)"
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -86,34 +98,49 @@ jobs:
           echo "Pushing Nginx image: ${{ env.NGINX_IMAGE }}"
           docker push ${{ env.NGINX_IMAGE }}
 
-      - name: Update kubeconfig
+      - name: Setup kubectl and verify cluster access
         run: |
+          # Ensure .kube directory exists
           mkdir -p $HOME/.kube
+          
+          # Update kubeconfig - use explicit path
+          echo "Updating kubeconfig..."
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
             --name ${{ env.EKS_CLUSTER }} \
             --kubeconfig $HOME/.kube/config
           
-          # Export KUBECONFIG so kubectl uses it
+          # Export KUBECONFIG
+          export KUBECONFIG=$HOME/.kube/config
           echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
           
-          echo "Kubeconfig location:"
-          ls -la $HOME/.kube/config
+          # Wait a moment for kubeconfig to be fully written
+          sleep 2
           
-          echo "KUBECONFIG environment variable set to: $HOME/.kube/config"
-
-      - name: Verify cluster access
-        run: |
-          echo "Current KUBECONFIG: ${KUBECONFIG}"
-          echo "HOME directory: $HOME"
-          echo "kubectl version:"
+          # Verify kubeconfig exists and is readable
+          echo "=== Kubeconfig File ==="
+          ls -lh $HOME/.kube/config
+          
+          echo ""
+          echo "=== Kubeconfig Contents (first 30 lines) ==="
+          head -30 $HOME/.kube/config
+          
+          echo ""
+          echo "=== kubectl version ==="
           kubectl version --client
           
-          echo "Testing cluster access..."
-          kubectl get nodes
+          echo ""
+          echo "=== Attempting kubectl get nodes ==="
+          # Use explicit kubeconfig
+          kubectl --kubeconfig=$HOME/.kube/config get nodes
+          
+          echo ""
+          echo "✅ Cluster access verified successfully!"
 
       - name: Create namespace and setup RBAC
         run: |
+          export KUBECONFIG=$HOME/.kube/config
+          
           # Create namespace if it doesn't exist
           kubectl get namespace ${{ env.K8S_NAMESPACE }} || kubectl create namespace ${{ env.K8S_NAMESPACE }}
           
@@ -126,6 +153,8 @@ jobs:
 
       - name: Create ECR credentials secret
         run: |
+          export KUBECONFIG=$HOME/.kube/config
+          
           # Get the login password
           ECR_PASSWORD=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
           
@@ -151,20 +180,28 @@ jobs:
 
       - name: Deploy Deployments to EKS
         run: |
+          export KUBECONFIG=$HOME/.kube/config
+          
           kubectl apply -f task4-terraform-eks/k8s/02-flask-app-deployment.yaml
           kubectl apply -f task4-terraform-eks/k8s/03-nginx-proxy-deployment.yaml
 
       - name: Apply Network Policies and HPA
         run: |
+          export KUBECONFIG=$HOME/.kube/config
+          
           kubectl apply -f task4-terraform-eks/k8s/05-network-policy.yaml
           kubectl apply -f task4-terraform-eks/k8s/06-hpa-pdb.yaml
 
       - name: Deploy Prometheus monitoring
         run: |
+          export KUBECONFIG=$HOME/.kube/config
+          
           kubectl apply -f task4-terraform-eks/k8s/07-prometheus.yaml
 
       - name: Verify deployment
         run: |
+          export KUBECONFIG=$HOME/.kube/config
+          
           kubectl rollout status deployment/flask-app -n ${{ env.K8S_NAMESPACE }} --timeout=5m
           kubectl rollout status deployment/nginx-proxy -n ${{ env.K8S_NAMESPACE }} --timeout=5m
           
