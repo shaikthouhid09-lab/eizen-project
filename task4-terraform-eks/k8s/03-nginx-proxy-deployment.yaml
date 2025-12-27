@@ -15,8 +15,7 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: nginx-proxy:1.0
-          imagePullPolicy: Never
+          image: 099210689252.dkr.ecr.ap-south-1.amazonaws.com/flask-nginx-app:nginx-dev
           ports:
             - containerPort: 80
           volumeMounts:
@@ -46,7 +45,7 @@ metadata:
   name: nginx-service
   namespace: flask-app
 spec:
-  type: NodePort
+  type: LoadBalancer
   selector:
     app: nginx-proxy
   ports:

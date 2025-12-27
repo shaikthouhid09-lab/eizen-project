@@ -31,8 +31,7 @@ spec:
         fsGroup: 1000
       containers:
       - name: flask-app
-        image: flask-app:1.0
-        imagePullPolicy: Never
+        image: 099210689252.dkr.ecr.ap-south-1.amazonaws.com/flask-nginx-app:flask-dev
         ports:
         - name: http
           containerPort: 5000
