@@ -122,20 +122,69 @@ jobs:
           ls -lh $HOME/.kube/config
           
           echo ""
-          echo "=== Kubeconfig Contents (first 30 lines) ==="
-          head -30 $HOME/.kube/config
-          
-          echo ""
           echo "=== kubectl version ==="
           kubectl version --client
           
           echo ""
-          echo "=== Attempting kubectl get nodes ==="
-          # Use explicit kubeconfig
-          kubectl --kubeconfig=$HOME/.kube/config get nodes
+          echo "=== Testing AWS credentials availability ==="
+          aws sts get-caller-identity || echo "WARNING: AWS credentials not available!"
           
           echo ""
-          echo "✅ Cluster access verified successfully!"
+          echo "=== Testing direct aws-cli auth ==="
+          aws eks describe-cluster --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }} --query 'cluster.endpoint' || echo "ERROR: Cannot describe cluster"
+          
+          echo ""
+          echo "=== Attempting kubectl get nodes ==="
+          # Try with explicit kubeconfig
+          KUBECONFIG=$HOME/.kube/config kubectl get nodes || {
+            echo "FAILED: kubectl cannot authenticate"
+            echo ""
+            echo "=== Debugging kubeconfig context ==="
+            cat $HOME/.kube/config | grep -A 5 "current-context"
+            echo ""
+            echo "This likely means your AWS IAM user is not in the EKS cluster's aws-auth ConfigMap"
+            exit 1
+          }
+
+      - name: Add GitHub Actions user to EKS aws-auth ConfigMap
+        if: always()  # Run even if previous step failed
+        run: |
+          export KUBECONFIG=$HOME/.kube/config
+          
+          echo "Checking if current user is in aws-auth ConfigMap..."
+          CALLER_ARN=$(aws sts get-caller-identity --query 'Arn' --output text)
+          CALLER_USER=$(aws sts get-caller-identity --query 'UserId' --output text)
+          
+          echo "Current IAM ARN: $CALLER_ARN"
+          echo "Current IAM User: $CALLER_USER"
+          
+          # Try to get the aws-auth configmap
+          if kubectl get configmap aws-auth -n kube-system &> /dev/null; then
+            echo "aws-auth ConfigMap exists"
+            
+            # Check if user is already in the configmap
+            if kubectl get configmap aws-auth -n kube-system -o jsonpath='{.data.mapUsers}' | grep -q "$CALLER_ARN"; then
+              echo "✓ User already in aws-auth ConfigMap"
+            else
+              echo "⚠ User NOT in aws-auth ConfigMap"
+              echo ""
+              echo "Run this command locally to add your user:"
+              echo ""
+              echo "aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}"
+              echo ""
+              echo "Then add your user to the configmap:"
+              echo "kubectl edit configmap aws-auth -n kube-system"
+              echo ""
+              echo "Add under mapUsers:"
+              echo "- rolearn: $CALLER_ARN"
+              echo "  username: $CALLER_USER"
+              echo "  groups:"
+              echo "    - system:masters"
+            fi
+          else
+            echo "aws-auth ConfigMap not found - cluster may not be properly initialized"
+          fi
+        continue-on-error: true
 
       - name: Create namespace and setup RBAC
         run: |
