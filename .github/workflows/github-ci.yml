@@ -98,6 +98,22 @@ jobs:
           echo "Pushing Nginx image: ${{ env.NGINX_IMAGE }}"
           docker push ${{ env.NGINX_IMAGE }}
 
+      - name: Install aws-iam-authenticator
+        run: |
+          echo "Installing aws-iam-authenticator..."
+          # Download the aws-iam-authenticator binary
+          curl -Lo aws-iam-authenticator https://github.com/kubernetes-sigs/aws-iam-authenticator/releases/download/v0.6.11/aws-iam-authenticator_0.6.11_linux_amd64
+          
+          # Make it executable
+          chmod +x aws-iam-authenticator
+          
+          # Move to a directory in PATH
+          sudo mv aws-iam-authenticator /usr/local/bin/
+          
+          # Verify installation
+          aws-iam-authenticator version
+          echo "✓ aws-iam-authenticator installed successfully"
+
       - name: Setup kubectl and verify cluster access
         run: |
           # Ensure .kube directory exists
@@ -120,6 +136,10 @@ jobs:
           # Verify kubeconfig exists and is readable
           echo "=== Kubeconfig File ==="
           ls -lh $HOME/.kube/config
+          
+          echo ""
+          echo "=== Kubeconfig Contents (user section) ==="
+          cat $HOME/.kube/config | grep -A 10 "users:"
           
           echo ""
           echo "=== kubectl version ==="
