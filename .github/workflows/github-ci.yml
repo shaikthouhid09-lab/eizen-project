@@ -43,8 +43,15 @@ jobs:
 
     - name: Build Docker images
       run: |
-        docker build -t $ECR_REPO:flask-$TAG -f Dockerfile .
-        docker build -t $ECR_REPO:nginx-$TAG -f nginx.Dockerfile .
+         docker build \
+            -t $ECR_REPO:flask-$TAG \
+            -f task2-docker-compose/Dockerfile \
+            task2-docker-compose
+
+         docker build \
+            -t $ECR_REPO:nginx-$TAG \
+            -f task2-docker-compose/nginx.Dockerfile \
+            task2-docker-compose
 
     - name: Push images to ECR
       run: |
