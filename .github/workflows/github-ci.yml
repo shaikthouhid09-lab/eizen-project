@@ -16,53 +16,57 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-    - name: Login to Amazon ECR
-      run: |
-        aws ecr get-login-password --region $AWS_REGION \
-        | docker login --username AWS --password-stdin $ECR_REPO
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION \
+          | docker login --username AWS --password-stdin $ECR_REPO
 
-    - name: Detect environment
-      run: |
-        if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-          echo "ENV=prod" >> $GITHUB_ENV
-          echo "TAG=prod" >> $GITHUB_ENV
-        else
-          echo "ENV=dev" >> $GITHUB_ENV
-          echo "TAG=dev" >> $GITHUB_ENV
-        fi
+      - name: Detect environment
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "ENV=prod" >> $GITHUB_ENV
+            echo "TAG=prod" >> $GITHUB_ENV
+          else
+            echo "ENV=dev" >> $GITHUB_ENV
+            echo "TAG=dev" >> $GITHUB_ENV
+          fi
 
-    - name: Build Docker images
-      run: |
-         docker build \
+      - name: Build Docker images
+        run: |
+          docker build \
             -t $ECR_REPO:flask-$TAG \
             -f task2-docker-compose/Dockerfile \
             task2-docker-compose
 
-         docker build \
+          docker build \
             -t $ECR_REPO:nginx-$TAG \
             -f task2-docker-compose/nginx.Dockerfile \
             task2-docker-compose
 
-    - name: Push images to ECR
-      run: |
-        docker push $ECR_REPO:flask-$TAG
-        docker push $ECR_REPO:nginx-$TAG
+      - name: Push images to ECR
+        run: |
+          docker push $ECR_REPO:flask-$TAG
+          docker push $ECR_REPO:nginx-$TAG
 
-    - name: Update kubeconfig
-      run: |
-        aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER
 
-    - name: Deploy to EKS
-      run: |
-        kubectl apply -R -f task4-terraform-eks/k8s/ -n $ENV
+      - name: Verify cluster access
+        run: |
+          kubectl get nodes
+
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -f task3-kubernetes/ -n $ENV
 
