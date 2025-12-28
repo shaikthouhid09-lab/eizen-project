@@ -30,19 +30,20 @@ This project showcases a production-grade deployment of a Flask application acro
 ```
 .
 ├── README.md                          # This file
+├── SUBMISSION.md                      # Interview submission summary
 ├── .github/
 │   └── workflows/
 │       └── github-ci.yml             # GitHub Actions CI/CD pipeline
 ├── .gitignore                         # Git ignore rules
 │
-├── task1-automation/
-│   ├── bash-scripts/                 # Bash automation scripts
-│   │   ├── create-test-files.sh
-│   │   ├── find-large-files.sh
-│   │   ├── cleanup-large-files.sh
-│   │   └── cron-cleanup.sh
-│   └── jenkins/                      # Jenkins pipeline configuration
-│       └── Jenkinsfile
+├── task1-shell/                       # Large file management & automation
+│   ├── README.md                      # Task 1 documentation
+│   ├── 01-generate-files.sh          # Generate test files (10X50MB, 20X100MB, etc.)
+│   ├── 02-find-large-files.sh        # Find and sort files >50MB
+│   ├── 03-commit-large-file.sh       # Commit large files to repo
+│   ├── 04-bfg-cleanup.sh             # BFG repo cleaner for large files
+│   ├── 05-cron-cleanup-job.sh        # CRON script for periodic cleanup
+│   └── 06-jenkins-job-config.groovy  # Jenkins pipeline for automation
 │
 ├── task2-docker-compose/             # Local Docker development
 │   ├── Dockerfile                    # Flask application container
@@ -156,18 +157,38 @@ kubectl apply -f ../k8s/
 
 ## 🔧 Component Details
 
-### Task 1: Bash Automation & Jenkins
+### Task 1: Bash Automation & Jenkins - Large File Management
 
-**Purpose**: Handle large file management and automated cleanup
+**Purpose**: Automated detection, management, and cleanup of large files in Git repositories
 
-**Features**:
-- Generate test files of various sizes (10X50MB, 20X100MB, 30X500MB, 5X1GB, 3X5GB, 1X10GB)
-- Identify and sort large files (>50MB) in descending order
-- Commit large files to repository and clean up with bfg-repo-cleaner
-- CRON-based periodic cleanup and small file commits
-- Jenkins pipeline for automated execution
+**Components**:
+1. **01-generate-files.sh** - Creates test files (10X50MB, 20X100MB, 30X500MB, 5X1GB, 3X5GB, 1X10GB)
+2. **02-find-large-files.sh** - Finds and sorts files >50MB in descending order
+3. **03-commit-large-file.sh** - Commits large files to repository
+4. **04-bfg-cleanup.sh** - Removes large files from history using BFG
+5. **05-cron-cleanup-job.sh** - Periodic CRON job for automated cleanup
+6. **06-jenkins-job-config.groovy** - Jenkins pipeline for scheduling and execution
 
-**Location**: Task 1 completed and configured in Jenkins (check Jenkins console for execution logs)
+**Key Features**:
+- ✅ Test file generation (6 different sizes)
+- ✅ Large file detection and reporting
+- ✅ Git integration with proper cleanup
+- ✅ CRON scheduling (configurable intervals)
+- ✅ Jenkins pipeline automation (daily execution)
+- ✅ Comprehensive logging for audit trails
+- ✅ Backup creation before cleanup
+- ✅ Configurable file size thresholds
+
+**Quick Usage**:
+```bash
+cd task1-shell
+bash 01-generate-files.sh          # Generate test files
+bash 02-find-large-files.sh        # Find large files
+bash 05-cron-cleanup-job.sh        # Run cleanup
+# Or setup Jenkins pipeline with 06-jenkins-job-config.groovy
+```
+
+**For detailed setup and configuration**, see [task1-shell/README.md](task1-shell/README.md)
 
 ### Task 2: Docker Compose Setup
 
