@@ -8,7 +8,6 @@ on:
 
 env:
   AWS_REGION: ap-south-1
-  ECR_ACCOUNT_ID: 099210689252
   ECR_REPO_NAME: flask-nginx-app
   EKS_CLUSTER: flask-eks-cluster
   K8S_NAMESPACE: flask-app
@@ -18,263 +17,116 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout source code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2. Configure AWS credentials using IAM Role (OIDC)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::099210689252:role/github-actions-eks-role
+          aws-region: ap-south-1
 
-      - name: Verify AWS credentials and EKS cluster
-        run: |
-          echo "=== AWS Identity ==="
-          aws sts get-caller-identity
-          
-          echo ""
-          echo "=== EKS Cluster Info ==="
-          aws eks describe-cluster \
-            --name ${{ env.EKS_CLUSTER }} \
-            --region ${{ env.AWS_REGION }} \
-            --query 'cluster.[name,status,endpoint]' \
-            --output table
-          
-          echo ""
-          echo "=== AWS CLI Credentials Check ==="
-          env | grep -i aws || echo "No AWS env vars visible (expected - they're in config)"
+      # 3. Verify AWS identity
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
 
+      # 4. Login to Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # 5. Detect environment and set image tags
       - name: Detect environment and set variables
         run: |
-          echo "Git Reference: ${GITHUB_REF}"
-          echo "Current branch: $(echo ${GITHUB_REF} | sed 's/refs\/heads\///')"
-          
           if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            echo "ENVIRONMENT=prod" >> $GITHUB_ENV
             echo "IMAGE_TAG=prod" >> $GITHUB_ENV
           else
-            echo "ENVIRONMENT=dev" >> $GITHUB_ENV
             echo "IMAGE_TAG=dev" >> $GITHUB_ENV
           fi
-          
-          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
-          echo "ECR_REGISTRY=${ECR_REGISTRY}" >> $GITHUB_ENV
-          
-          # Read the environment variable that was just set
-          source $GITHUB_ENV
-          echo "IMAGE_TAG is: ${IMAGE_TAG}"
-          
-          echo "FLASK_IMAGE=${ECR_REGISTRY}/${{ env.ECR_REPO_NAME }}:flask-${IMAGE_TAG}" >> $GITHUB_ENV
-          echo "NGINX_IMAGE=${ECR_REGISTRY}/${{ env.ECR_REPO_NAME }}:nginx-${IMAGE_TAG}" >> $GITHUB_ENV
 
+          echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_ENV
+          echo "FLASK_IMAGE=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO_NAME }}:flask-${IMAGE_TAG}" >> $GITHUB_ENV
+          echo "NGINX_IMAGE=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO_NAME }}:nginx-${IMAGE_TAG}" >> $GITHUB_ENV
+
+      # 6. Build Flask Docker image
       - name: Build Flask Docker image
         run: |
-          echo "Building Flask image with tag: ${{ env.FLASK_IMAGE }}"
           docker build \
-            -t ${{ env.FLASK_IMAGE }} \
+            -t $FLASK_IMAGE \
             -f task2-docker-compose/Dockerfile \
             task2-docker-compose
-          docker images | grep flask-nginx-app
 
+      # 7. Build Nginx Docker image
       - name: Build Nginx Docker image
         run: |
-          echo "Building Nginx image with tag: ${{ env.NGINX_IMAGE }}"
           docker build \
-            -t ${{ env.NGINX_IMAGE }} \
+            -t $NGINX_IMAGE \
             -f task2-docker-compose/nginx.Dockerfile \
             task2-docker-compose
-          docker images | grep flask-nginx-app
 
+      # 8. Push Docker images to ECR
       - name: Push images to ECR
         run: |
-          echo "Pushing Flask image: ${{ env.FLASK_IMAGE }}"
-          docker push ${{ env.FLASK_IMAGE }}
-          
-          echo "Pushing Nginx image: ${{ env.NGINX_IMAGE }}"
-          docker push ${{ env.NGINX_IMAGE }}
+          docker push $FLASK_IMAGE
+          docker push $NGINX_IMAGE
 
-      - name: Install aws-iam-authenticator
+      # 9. Configure kubectl for EKS
+      - name: Configure kubectl
         run: |
-          echo "Installing aws-iam-authenticator..."
-          # Download the aws-iam-authenticator binary
-          curl -Lo aws-iam-authenticator https://github.com/kubernetes-sigs/aws-iam-authenticator/releases/download/v0.6.11/aws-iam-authenticator_0.6.11_linux_amd64
-          
-          # Make it executable
-          chmod +x aws-iam-authenticator
-          
-          # Move to a directory in PATH
-          sudo mv aws-iam-authenticator /usr/local/bin/
-          
-          # Verify installation
-          aws-iam-authenticator version
-          echo "✓ aws-iam-authenticator installed successfully"
-
-      - name: Setup kubectl and verify cluster access
-        run: |
-          # Ensure .kube directory exists
-          mkdir -p $HOME/.kube
-          
-          # Update kubeconfig - use explicit path
-          echo "Updating kubeconfig..."
           aws eks update-kubeconfig \
-            --region ${{ env.AWS_REGION }} \
-            --name ${{ env.EKS_CLUSTER }} \
-            --kubeconfig $HOME/.kube/config
-          
-          # Export KUBECONFIG
-          export KUBECONFIG=$HOME/.kube/config
-          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
-          
-          # Wait a moment for kubeconfig to be fully written
-          sleep 2
-          
-          # Verify kubeconfig exists and is readable
-          echo "=== Kubeconfig File ==="
-          ls -lh $HOME/.kube/config
-          
-          echo ""
-          echo "=== Kubeconfig Contents (user section) ==="
-          cat $HOME/.kube/config | grep -A 10 "users:"
-          
-          echo ""
-          echo "=== kubectl version ==="
-          kubectl version --client
-          
-          echo ""
-          echo "=== Testing AWS credentials availability ==="
-          aws sts get-caller-identity || echo "WARNING: AWS credentials not available!"
-          
-          echo ""
-          echo "=== Testing direct aws-cli auth ==="
-          aws eks describe-cluster --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }} --query 'cluster.endpoint' || echo "ERROR: Cannot describe cluster"
-          
-          echo ""
-          echo "=== Attempting kubectl get nodes ==="
-          # Try with explicit kubeconfig
-          KUBECONFIG=$HOME/.kube/config kubectl get nodes || {
-            echo "FAILED: kubectl cannot authenticate"
-            echo ""
-            echo "=== Debugging kubeconfig context ==="
-            cat $HOME/.kube/config | grep -A 5 "current-context"
-            echo ""
-            echo "This likely means your AWS IAM user is not in the EKS cluster's aws-auth ConfigMap"
-            exit 1
-          }
+            --region $AWS_REGION \
+            --name $EKS_CLUSTER
 
-      - name: Add GitHub Actions user to EKS aws-auth ConfigMap
-        if: always()  # Run even if previous step failed
-        run: |
-          export KUBECONFIG=$HOME/.kube/config
-          
-          echo "Checking if current user is in aws-auth ConfigMap..."
-          CALLER_ARN=$(aws sts get-caller-identity --query 'Arn' --output text)
-          CALLER_USER=$(aws sts get-caller-identity --query 'UserId' --output text)
-          
-          echo "Current IAM ARN: $CALLER_ARN"
-          echo "Current IAM User: $CALLER_USER"
-          
-          # Try to get the aws-auth configmap
-          if kubectl get configmap aws-auth -n kube-system &> /dev/null; then
-            echo "aws-auth ConfigMap exists"
-            
-            # Check if user is already in the configmap
-            if kubectl get configmap aws-auth -n kube-system -o jsonpath='{.data.mapUsers}' | grep -q "$CALLER_ARN"; then
-              echo "✓ User already in aws-auth ConfigMap"
-            else
-              echo "⚠ User NOT in aws-auth ConfigMap"
-              echo ""
-              echo "Run this command locally to add your user:"
-              echo ""
-              echo "aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}"
-              echo ""
-              echo "Then add your user to the configmap:"
-              echo "kubectl edit configmap aws-auth -n kube-system"
-              echo ""
-              echo "Add under mapUsers:"
-              echo "- rolearn: $CALLER_ARN"
-              echo "  username: $CALLER_USER"
-              echo "  groups:"
-              echo "    - system:masters"
-            fi
-          else
-            echo "aws-auth ConfigMap not found - cluster may not be properly initialized"
-          fi
-        continue-on-error: true
+      # 10. Verify EKS access
+      - name: Verify EKS access
+        run: kubectl get nodes
 
-      - name: Create namespace and setup RBAC
+      # 11. Create namespace and apply RBAC
+      - name: Create namespace and apply RBAC
         run: |
-          export KUBECONFIG=$HOME/.kube/config
-          
-          # Create namespace if it doesn't exist
-          kubectl get namespace ${{ env.K8S_NAMESPACE }} || kubectl create namespace ${{ env.K8S_NAMESPACE }}
-          
-          # Apply ConfigMap and RBAC first
+          kubectl get namespace $K8S_NAMESPACE || kubectl create namespace $K8S_NAMESPACE
           kubectl apply -f task4-terraform-eks/k8s/01-configmap.yaml
           kubectl apply -f task4-terraform-eks/k8s/04-rbac.yaml
-          
-          echo "Namespace created and RBAC configured"
-          kubectl get namespace ${{ env.K8S_NAMESPACE }}
 
-      - name: Create ECR credentials secret
+      # 12. Create / update ECR image pull secret
+      - name: Create ECR pull secret
         run: |
-          export KUBECONFIG=$HOME/.kube/config
-          
-          # Get the login password
-          ECR_PASSWORD=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
-          
-          # Create Docker registry secret for ECR access
           kubectl create secret docker-registry ecr-secret \
-            --docker-server=${{ env.ECR_REGISTRY }} \
+            --docker-server=$ECR_REGISTRY \
             --docker-username=AWS \
-            --docker-password="${ECR_PASSWORD}" \
-            -n ${{ env.K8S_NAMESPACE }} \
-            --dry-run=client \
-            -o yaml | kubectl apply -f -
-          
-          echo "ECR credentials secret created/updated"
-          kubectl get secret ecr-secret -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.data}'
+            --docker-password=$(aws ecr get-login-password --region $AWS_REGION) \
+            -n $K8S_NAMESPACE \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Update Kubernetes manifests with new image tags
+      # 13. Update Kubernetes manifests with new image tags
+      - name: Update Kubernetes manifests
         run: |
-          # Update Flask image
-          sed -i "s|image: .*flask-.*|image: ${{ env.FLASK_IMAGE }}|g" task4-terraform-eks/k8s/02-flask-app-deployment.yaml
-          
-          # Update Nginx image
-          sed -i "s|image: .*nginx-.*|image: ${{ env.NGINX_IMAGE }}|g" task4-terraform-eks/k8s/03-nginx-proxy-deployment.yaml
+          sed -i "s|image: .*flask-.*|image: $FLASK_IMAGE|g" task4-terraform-eks/k8s/02-flask-app-deployment.yaml
+          sed -i "s|image: .*nginx-.*|image: $NGINX_IMAGE|g" task4-terraform-eks/k8s/03-nginx-proxy-deployment.yaml
 
-      - name: Deploy Deployments to EKS
+      # 14. Deploy applications to EKS
+      - name: Deploy applications
         run: |
-          export KUBECONFIG=$HOME/.kube/config
-          
           kubectl apply -f task4-terraform-eks/k8s/02-flask-app-deployment.yaml
           kubectl apply -f task4-terraform-eks/k8s/03-nginx-proxy-deployment.yaml
 
+      # 15. Apply Network Policies and HPA
       - name: Apply Network Policies and HPA
         run: |
-          export KUBECONFIG=$HOME/.kube/config
-          
           kubectl apply -f task4-terraform-eks/k8s/05-network-policy.yaml
           kubectl apply -f task4-terraform-eks/k8s/06-hpa-pdb.yaml
 
-      - name: Deploy Prometheus monitoring
-        run: |
-          export KUBECONFIG=$HOME/.kube/config
-          
-          kubectl apply -f task4-terraform-eks/k8s/07-prometheus.yaml
+      # 16. Deploy Prometheus monitoring
+      - name: Deploy Prometheus
+        run: kubectl apply -f task4-terraform-eks/k8s/07-prometheus.yaml
 
+      # 17. Verify deployment
       - name: Verify deployment
         run: |
-          export KUBECONFIG=$HOME/.kube/config
-          
-          kubectl rollout status deployment/flask-app -n ${{ env.K8S_NAMESPACE }} --timeout=5m
-          kubectl rollout status deployment/nginx-proxy -n ${{ env.K8S_NAMESPACE }} --timeout=5m
-          
-          echo "Deployment successful!"
-          kubectl get pods -n ${{ env.K8S_NAMESPACE }}
-          kubectl get svc -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout status deployment/flask-app -n $K8S_NAMESPACE --timeout=5m
+          kubectl rollout status deployment/nginx-proxy -n $K8S_NAMESPACE --timeout=5m
+          kubectl get pods -n $K8S_NAMESPACE
+          kubectl get svc -n $K8S_NAMESPACE
 
